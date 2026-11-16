@@ -43,22 +43,49 @@ if (Test-Path (Join-Path $installDir 'framesync')) {
 }
 Copy-Item -Recurse -Force (Join-Path $repo 'framesync') $installDir
 
-$secretBytes = New-Object byte[] 32
-$rng = [Security.Cryptography.RandomNumberGenerator]::Create()
-$rng.GetBytes($secretBytes)
-$rng.Dispose()
 $secretFile = Join-Path $installDir 'token'
-[IO.File]::WriteAllText($secretFile, [Convert]::ToBase64String($secretBytes))
-$acl = Get-Acl $secretFile
-$acl.SetAccessRuleProtection($true, $false)
-$currentUser = [Security.Principal.WindowsIdentity]::GetCurrent().Name
-$rule = New-Object -TypeName System.Security.AccessControl.FileSystemAccessRule -ArgumentList @(
-    $currentUser,
-    [System.Security.AccessControl.FileSystemRights]::Read,
-    [System.Security.AccessControl.AccessControlType]::Allow
-)
-$acl.SetAccessRule($rule)
-Set-Acl -Path $secretFile -AclObject $acl
+$existingToken = Test-Path $secretFile
+if ($existingToken) {
+    try {
+        $secretBytes = [Convert]::FromBase64String([IO.File]::ReadAllText($secretFile).Trim())
+    } catch {
+        throw 'The existing FrameSync token is invalid. Remove it and rerun setup to generate a new token.'
+    }
+    if ($secretBytes.Length -lt 32) {
+        throw 'The existing FrameSync token is invalid. Remove it and rerun setup to generate a new token.'
+    }
+    $currentSid = [Security.Principal.WindowsIdentity]::GetCurrent().User
+    $existingAcl = Get-Acl $secretFile
+    $rules = $existingAcl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])
+    $otherAccess = @($rules | Where-Object {
+        $_.AccessControlType -eq [Security.AccessControl.AccessControlType]::Allow -and
+        $_.IdentityReference.Value -ne $currentSid.Value
+    })
+    if (-not $existingAcl.AreAccessRulesProtected -or $otherAccess.Count -gt 0) {
+        throw 'The existing FrameSync token has unsafe permissions. Remove it and rerun setup to generate a protected token.'
+    }
+} else {
+    $secretBytes = New-Object byte[] 32
+    $rng = [Security.Cryptography.RandomNumberGenerator]::Create()
+    try {
+        $rng.GetBytes($secretBytes)
+    } finally {
+        $rng.Dispose()
+    }
+    [IO.File]::WriteAllText($secretFile, [Convert]::ToBase64String($secretBytes))
+}
+if (-not $existingToken) {
+    $acl = Get-Acl $secretFile
+    $acl.SetAccessRuleProtection($true, $false)
+    $currentUser = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+    $rule = New-Object -TypeName System.Security.AccessControl.FileSystemAccessRule -ArgumentList @(
+        $currentUser,
+        [System.Security.AccessControl.FileSystemRights]::Read,
+        [System.Security.AccessControl.AccessControlType]::Allow
+    )
+    $acl.SetAccessRule($rule)
+    Set-Acl -Path $secretFile -AclObject $acl
+}
 
 & $ssh $Target 'umask 077 && mkdir -p ~/.cache/framesync-setup && chmod 700 ~/.cache/framesync-setup'
 if ($LASTEXITCODE -ne 0) { throw 'Could not create the FrameSync setup directory over SSH.' }
@@ -78,6 +105,18 @@ $shortcut.Arguments = "`"$installDir\framesync.py`" host --target `"$Target`" --
 $shortcut.WorkingDirectory = $installDir
 $shortcut.Description = 'Automatic Steam Frame clipboard synchronization'
 $shortcut.Save()
+
+$scriptPath = Join-Path $installDir 'framesync.py'
+$existingAgents = @(Get-CimInstance Win32_Process | Where-Object {
+    $_.Name -in @('python.exe', 'pythonw.exe') -and
+    $_.CommandLine -and $_.CommandLine.Contains($scriptPath)
+})
+foreach ($agent in $existingAgents) {
+    Get-CimInstance Win32_Process -Filter "Name='ssh.exe' AND ParentProcessId=$($agent.ProcessId)" | ForEach-Object {
+        Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
+    }
+    Stop-Process -Id $agent.ProcessId -Force -ErrorAction SilentlyContinue
+}
 
 $arguments = @(
     "`"$installDir\framesync.py`"",
