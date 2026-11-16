@@ -49,7 +49,10 @@ class SyncState:
             logger.info("Clipboard has no text to synchronize")
             return
         try:
-            update = self._next_update(text)
+            if self.current is not None and self.current.text == text:
+                update = self.current
+            else:
+                update = self._next_update(text)
         except (UnicodeEncodeError, ValueError) as error:
             logger.warning("Ignoring unsupported clipboard snapshot: %s", error)
             return

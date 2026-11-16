@@ -1,7 +1,8 @@
 param(
     [Parameter(Mandatory = $false)]
     [ValidatePattern('^[A-Za-z0-9._@:-]+$')]
-    [string] $Target = 'steamos@frame'
+    [string] $Target = 'steamos@frame',
+    [string] $PythonPath = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -9,15 +10,18 @@ if ($Target.StartsWith('-')) {
     throw 'The SSH target must not begin with a dash.'
 }
 $repo = Split-Path -Parent $PSScriptRoot
-$pythonLauncher = Get-Command py.exe -ErrorAction SilentlyContinue
-if (-not $pythonLauncher) {
-    throw 'Install Python 3.11+ for Windows from python.org, then rerun this script.'
+if ($PythonPath) {
+    $python = (Resolve-Path $PythonPath).Path
+} else {
+    $pythonLauncher = Get-Command py.exe -ErrorAction SilentlyContinue
+    if (-not $pythonLauncher) {
+        throw 'Install Python 3.11+ or pass -PythonPath with the path to python.exe.'
+    }
+    $python = (& $pythonLauncher.Source -3 -c 'import sys; print(sys.executable)').Trim()
 }
-$pyLauncherPath = $pythonLauncher.Source
 $ssh = (Get-Command ssh.exe -ErrorAction Stop).Source
 $scp = (Get-Command scp.exe -ErrorAction Stop).Source
-$python = (& $pyLauncherPath -3 -c 'import sys; print(sys.executable)').Trim()
-& $pyLauncherPath -3 -c 'import sys; raise SystemExit(sys.version_info < (3, 11))'
+& $python -c 'import sys; raise SystemExit(sys.version_info < (3, 11))'
 if ($LASTEXITCODE -ne 0) {
     throw 'FrameSync requires Python 3.11 or newer.'
 }
@@ -85,5 +89,5 @@ $arguments = @(
 )
 Start-Process -FilePath $pythonw -ArgumentList $arguments -WorkingDirectory $installDir
 
-Write-Host 'FrameSync installed. It starts at Windows logon and KDE desktop login on the Frame.'
+Write-Host 'FrameSync installed. It starts at Windows logon and in the Frame Game Mode session.'
 Write-Host "Windows logs: $(Join-Path $env:LOCALAPPDATA 'FrameSync\framesync.log')"

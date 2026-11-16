@@ -90,6 +90,28 @@ async def frame_peer_loop(state: SyncState, secret: bytes, port: int) -> None:
 
 async def run_frame(args: argparse.Namespace) -> None:
     secret = load_secret(args.secret_file)
+    if args.backend == "x11":
+        from .frame_clipboard import FrameClipboard
+
+        clipboard = FrameClipboard()
+        state = SyncState(clipboard.read_text, clipboard.set_text)
+        tasks = [
+            asyncio.create_task(clipboard.watch(state)),
+            asyncio.create_task(frame_peer_loop(state, secret, args.frame_port)),
+        ]
+    else:
+        await run_wayland_frame(args, secret)
+        return
+
+    try:
+        await asyncio.gather(*tasks)
+    finally:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
+async def run_wayland_frame(args: argparse.Namespace, secret: bytes) -> None:
     runtime_dir = os.environ.get("XDG_RUNTIME_DIR")
     socket_dir = (
         Path(runtime_dir) / "framesync"
@@ -251,8 +273,19 @@ async def run_host(args: argparse.Namespace) -> None:
     listener = threading.Thread(target=watch_clipboard, name="windows-clipboard-listener", daemon=True)
     listener.start()
 
+    await serve_host(state, secret, args)
+
+
+async def serve_host(state: SyncState, secret: bytes, args: argparse.Namespace) -> None:
+    connections: set[asyncio.Task[None]] = set()
+
+    def accept(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        task = asyncio.create_task(_host_connection(reader, writer, state, secret))
+        connections.add(task)
+        task.add_done_callback(connections.discard)
+
     server = await asyncio.start_server(
-        lambda reader, writer: _host_connection(reader, writer, state, secret),
+        accept,
         "127.0.0.1",
         args.local_port,
         limit=2 * MAX_TEXT_BYTES + 16,
@@ -260,11 +293,14 @@ async def run_host(args: argparse.Namespace) -> None:
     logger.info("Windows clipboard listener is active on 127.0.0.1:%d", args.local_port)
     tunnel = asyncio.create_task(run_ssh_tunnel(args))
     try:
-        async with server:
-            await server.serve_forever()
+        await asyncio.Future()
     finally:
+        server.close()
         tunnel.cancel()
-        await asyncio.gather(tunnel, return_exceptions=True)
+        for connection in connections:
+            connection.cancel()
+        await asyncio.gather(tunnel, *connections, return_exceptions=True)
+        await server.wait_closed()
 
 
 def configure_logging() -> None:
@@ -291,6 +327,7 @@ def main() -> None:
     frame = subparsers.add_parser("frame", help="run in the Steam Frame KDE session")
     frame.add_argument("--secret-file", type=Path, required=True)
     frame.add_argument("--frame-port", type=int, default=39102)
+    frame.add_argument("--backend", choices=("wayland", "x11"), default="wayland")
     emit_parser = subparsers.add_parser("emit", help=argparse.SUPPRESS)
     emit_parser.add_argument("--socket", required=True)
     args = parser.parse_args()

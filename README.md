@@ -1,10 +1,23 @@
+# VIBECODE WARNING!!!!
+This project is 100% fully vibecoded, every single line and feature comes from a LLM, all the tests, EVERYTHING!!!!
+
+This was initially made for me and me alone, i just released it publicly in case someone else finds it useful too!
+
+I REPEAT **NO THING HERE IS HAND-WRITTEN!!!!**
+please i cannot stress this enough, the only hand written lines here are this warning in the readme you are seeing right now! 
+
+Take precautions, do not execute random code from the internet, there is 100% a chance that there is some security vulnerability and risk involved
+
+there is a chance something does not work as expected, and you should be prepared for potential bugs and edge cases
+
+you have been warned
+
 # FrameSync
 
-FrameSync is an experimental, text-only clipboard bridge between a Windows
-computer and the Steam Frame's nested KDE desktop. It is not yet a verified
-solution for a Frame that is running only Game Mode. The repository and device
-were not available together for real-headset testing, and native Steam UI
-clipboard access has not been established by the sources reviewed here.
+FrameSync is an experimental, text-only clipboard bridge between Windows and
+the Steam Frame. Synchronization between Windows, Game Mode, and the nested
+Plasma desktop has been tested on a real device. Games using other clipboard
+paths remain unverified.
 
 ## What the research establishes
 
@@ -30,8 +43,8 @@ and
 [`src/clipboard.rs`](https://github.com/dnut/clipboard-sync/blob/master/src/clipboard.rs).
 `clipboard-sync` supports X11 and Wayland text, but does not support Windows or
 network transport. Its upstream Nix flake is described as x86-only by the
-Frame-specific module; the Frame installer uses Cargo to build the published
-crate for the device instead.
+Frame-specific module, which builds the crate for the device with Cargo.
+FrameSync does not install this bridge.
 
 The
 [`awesome-steam-frame`](https://github.com/kosantosbik/awesome-steam-frame)
@@ -53,10 +66,9 @@ desktop clipboard path, not a Game Mode clipboard bridge:
 
 1. On Windows, FrameSync listens for `WM_CLIPBOARDUPDATE` through
    `AddClipboardFormatListener`; it does not poll the Windows clipboard.
-2. In the Frame's nested KDE session, `wl-paste --watch` reports Wayland text
-   changes and `wl-copy` applies received text. The upstream
-   `clipboard-sync` process bridges this Wayland clipboard to accessible X11
-   and Wayland clipboards on the Frame.
+2. On the Frame, a user service polls Game Mode's XWayland `:0` clipboard using
+  `xclip`. When the nested Plasma desktop is active, it discovers the desktop
+  session bus and polls Klipper. Changes are mirrored between both sessions.
 3. Windows opens an SSH reverse tunnel to the Frame. The Frame client connects
    to the forwarded port; both socket ends bind to loopback only. SSH encrypts
    the stream and authenticates the Frame using the user's existing SSH
@@ -67,16 +79,15 @@ desktop clipboard path, not a Game Mode clipboard bridge:
    `(timestamp_ns, origin_id)` pair. Applying an update does not echo it back:
    the resulting local clipboard notification has the same text and is
    ignored. Logs contain lengths and errors, never clipboard contents.
-5. On reconnect, both sides publish their current clipboard snapshot. The
-   snapshot timestamp is the time it is observed, not the original copy time;
-   this makes reconnect reconciliation deterministic but cannot recover the
-   actual chronology of changes made while disconnected.
+5. On reconnect, both sides publish their current clipboard snapshot. Known
+  updates retain their original timestamp; newly observed text is timestamped
+  when observed. This cannot recover the actual chronology of changes that
+  could not be observed while disconnected.
 
-This design deliberately follows the Frame-specific project's KDE autostart
-choice instead of a generic `systemd --user` unit: the nested desktop has its
-own runtime directory, D-Bus, and Wayland environment, and is not guaranteed
-to reach the outer Steam user manager. KDE autostart provides the clipboard
-environment that `wl-paste` needs.
+The service is tied to `gamescope-session.target` and detects the nested
+desktop when `plasmashell` starts. It does not start the upstream
+`clipboard-sync` bridge. The old Wayland backend remains available for
+development but is not installed by the current installer.
 
 ## Installation
 
@@ -85,14 +96,10 @@ environment that `wl-paste` needs.
 - Windows 10/11 with Python 3.11+ and the OpenSSH client available on `PATH`.
 - A trusted SSH host key and working key-based SSH login from Windows to the
   Frame; the target must not require an interactive password on every start.
-- On the Frame, `wl-clipboard`, Cargo, and permission to build a user-level
-  Rust crate. The installer does not change the read-only system image or use
-  `sudo`.
-
-The Frame's clipboard agent starts from KDE autostart. The `clipboard-sync`
-bridge is built from upstream source with `cargo install` if it is not already
-installed. If Cargo is not available on the Frame, install the Rust toolchain
-for the `steamos` user and rerun setup.
+- On the Frame, Python 3.11+ with `dbus-next`, a Game Mode user session, and either `xclip` or
+  Git, Autoconf, Make, GCC, pkg-config, X11 development libraries, and network
+  access to build it. The installer uses a user-local build and does not use
+  `sudo` or change the read-only system image.
 
 ### Install on Windows and the Frame
 
@@ -104,21 +111,23 @@ From PowerShell in this repository:
 
 Use the SSH host alias or `user@host` that already works from Windows. The
 installer copies the files over SSH, creates a random token with a
-user-restricted ACL, installs KDE autostart on the Frame, and adds a Windows
+user-restricted ACL, installs a Game Mode service on the Frame, and adds a Windows
 Startup-folder shortcut. The Frame opens no LAN listening port; it connects
 to a loopback-only reverse-forwarded SSH port.
 
 The installer does not configure SSH keys or disable SteamOS filesystem
-protections. No SSH password is stored by FrameSync. For a first installation,
-open Desktop Mode once so KDE autostart can launch the bridge.
+protections. No SSH password is stored by FrameSync. If Python is installed
+without the `py` launcher, supply its executable with `-PythonPath`:
+
+```powershell
+.\windows\install.ps1 -Target steamos@frame -PythonPath 'C:\path\to\python.exe'
+```
 
 ### Inspect status
 
 - Windows log: `%LOCALAPPDATA%\FrameSync\framesync.log`
 - Frame log: `~/.local/state/framesync/framesync.log`
-- Upstream bridge log: `~/.local/state/framesync/clipboard-sync.log`
-- On the Frame, inspect `pgrep -af 'framesync|clipboard-sync'` and
-  `~/.config/autostart/framesync.desktop`.
+- On the Frame, run `systemctl --user status framesync.service`.
 - Windows SSH tunnel errors are written to the Windows log. Confirm that
   `ssh <target>` works without an interactive password before troubleshooting
   FrameSync.
@@ -135,16 +144,13 @@ Logs intentionally exclude clipboard contents.
   remote TCP forwarding (`AllowTcpForwarding remote`). FrameSync's forwarded
   listener is explicitly bound to `127.0.0.1`; do not change it to a wildcard
   address.
-- **KDE reports `wl-paste` or `wl-copy` errors:** verify `wl-clipboard` is
-  installed and that `framesync.desktop` is launched from the nested KDE
-  session. Starting the process from a plain SSH shell does not supply the
-  Wayland session environment.
-- **No Game Mode updates:** confirm KDE Desktop Mode has been opened and both
-  `clipboard-sync` and `framesync` are running. This does not prove native Steam
-  dashboard clipboard support; that behavior remains a device-test blocker.
-- **Cargo build fails on the Frame:** install the Rust toolchain for the
-  `steamos` user and rerun `windows/install.ps1`. The installer does not use
-  `sudo` or disable the read-only filesystem.
+- **No Game Mode updates:** check the Frame service and logs. The current
+  installation uses display `:0`; applications using a different clipboard
+  are not covered by this setup.
+- **No Desktop Mode updates:** check that `plasmashell` and Klipper are running
+  in the nested session and that `python3 -c 'import dbus_next'` works.
+- **The xclip build fails:** check the build prerequisites above and rerun
+  setup. The installer does not use `sudo` or disable the read-only filesystem.
 - **A token was exposed or copied to another account:** stop FrameSync on both
   endpoints, remove the token files, rerun setup to generate a fresh secret,
   and review account-level SSH access.
@@ -163,25 +169,17 @@ Then remove the Frame component over SSH:
 ssh steamos@frame 'bash ~/.local/share/framesync/uninstall.sh'
 ```
 
-The Frame uninstaller removes the FrameSync autostart, binary scripts, and
-token. It uninstalls `clipboard-sync` only if this installer installed it.
+The Frame uninstaller stops and removes the Game Mode service, scripts, and
+token. It uninstalls `clipboard-sync` only if a previous installer installed it.
 Configuration/log directories are retained for inspection; remove
 `~/.config/framesync` and `~/.local/state/framesync` manually if desired.
-Log out of the KDE desktop session after removal to terminate any already
-running Frame-side process.
 
 ## Limitations and security notes
 
-- **Game Mode remains unverified.** The Frame-specific source establishes that
-  X11 and Wayland clipboards can be bridged when `clipboard-sync` is running,
-  but it does not establish that the native Steam dashboard or every game
-  exposes its clipboard through those selections. FrameSync is started by KDE
-  autostart, not by the Steam session. A cold boot directly into Game Mode,
-  native Steam UI copy/paste, and operation after KDE exits must be tested on
-  the target device before calling this requirement satisfied.
-- The supported Frame-side clipboard API is the current KDE Wayland
-  clipboard. On-screen Android/SDL applications may use different clipboard
-  paths; Frame Control's clipboard patch is not used.
+- Game Mode XWayland `:0` and the nested Plasma desktop are tested, but
+  individual games, other displays, and startup after reboot remain unverified.
+  On-screen Android/SDL applications may use different clipboard paths; Frame
+  Control's clipboard patch is not used.
 - Text only; images, files, rich text, and non-text MIME types are ignored.
 - The maximum text payload is 1 MiB. Clipboard updates made while disconnected
   are reconciled from each side's current clipboard on reconnect.
@@ -193,61 +191,26 @@ running Frame-side process.
 
 ## Verification report
 
+Live testing on 2026-11-16 used Windows and a Steam Frame running Game Mode
+with XWayland `:0` and the nested Plasma desktop. The installed agents
+transferred multiline text, accents, CJK, emoji, and trailing newlines. The
+user confirmed Steam UI copy and paste in both directions.
+
 | Area | Status |
 |---|---|
-| Protocol framing, UTF-8 round-trip, 1 MiB limit, authentication, and conflict ordering | Covered by local unit tests |
-| Windows clipboard listener/API | Source implemented; not executable on this Linux build host |
-| Linux Wayland watcher and writer | Source implemented; not tested in a live Wayland session here |
-| `dnut/clipboard-sync` behavior | Source and Frame-specific integration read; not tested on this Frame |
-| SSH reverse tunnel to Frame | Loopback forwarding passes with a Linux TCP peer; Windows host not tested |
-| Game Mode ↔ Windows and Desktop Mode ↔ Windows | Not verified on hardware |
-| Sleep/wake, Wi-Fi reconnect, session restart, and large real clipboard transfers | Not verified on hardware |
-
-Do not treat the table's unverified items as working guarantees. The current
-implementation is a research-backed prototype for the nested KDE session, not
-a validated claim of seamless synchronization in every Game Mode situation.
-
-### Live Frame checks (2026-11-16)
-
-The connected device reported SteamOS kernel `7.2.0-g344f27110f05` on
-`aarch64` and was running the Gamescope Steam/VR session. Gamescope had
-XWayland displays `:0` and `:1`; its user manager reported `DISPLAY=:0` and
-`XDG_SESSION_TYPE=x11`. The checks made no persistent changes to the Frame.
-
-| Check | Result |
-|---|---|
-| Read-only inspection of clipboard tools and services | `wl-paste`, `wl-copy`, `cargo`, `rustc`, and `clipboard-sync` were not installed; no FrameSync files or processes were present |
-| Initial `CLIPBOARD` and `PRIMARY` selection owners on `:0` and `:1` | All four selections were empty |
-| Temporary UTF-8/emoji clipboard offer, then request/read, on XWayland `:0` | Pass; exact 49-byte test text round-tripped. The temporary owner released the selection afterward |
-| Same temporary round-trip on XWayland `:1` | Pass; exact 49-byte test text round-tripped. The temporary owner released the selection afterward |
-| SSH reverse forwarding, bound to Frame loopback | Pass; a test payload and response traversed the authenticated reverse tunnel. No port was opened on the LAN interface |
-| FrameSync install or Windows-to-Frame clipboard transfer | Not run. The Frame lacks the current installer's required `wl-clipboard` and Cargo prerequisites, and this agent host is Linux |
-| Steam dashboard/game copy behavior and Desktop Mode | Not verified; XWayland interoperability tests use a test client and do not establish native Steam UI behavior |
-
-These checks confirm that both Game Mode XWayland servers can participate in
-ordinary X11 text clipboard selections and that the SSH reverse-forward path
-is available. They do **not** make the current `wl-paste`-based FrameSync
-client Game Mode compatible: the required Wayland clipboard commands were
-absent, and native Steam UI integration remains unproven. No clipboard
-contents belonging to the user were read; the selections were empty before
-the test and the temporary test owners released them afterward.
-
-| Test case | Expected behavior | Result |
-|---|---|---|
-| Windows ↔ KDE Desktop Mode, plain text | Copy propagates automatically both ways | Not run on a device pair |
-| Windows ↔ Game Mode dashboard | Copy propagates automatically both ways | XWayland `:0`/`:1` test-client selections pass; native Steam dashboard remains unverified |
-| Windows ↔ Game Mode-launched apps | Text clipboard propagates both ways | Not verified on Frame |
-| Game Mode ↔ Desktop Mode | Upstream bridge mirrors accessible clipboard selections | Upstream source reviewed; no live Frame test |
-| Multiline, accents, CJK, emoji, trailing newlines | Exact UTF-8 text is retained | Protocol unit test passes |
-| Large payload (1 MiB) | Accepted; payloads above 1 MiB rejected | Protocol boundary tests pass; no OS clipboard test |
-| Repeated updates and loop suppression | No echo loop; each new text is applied once | In-process peer test passes |
-| Near-simultaneous updates | Stable timestamp/origin ordering | State-order unit test passes; no wall-clock skew test |
-| SSH/Wi-Fi disconnect and reconnect | Tunnel restarts; current clipboard snapshots reconcile | Reconnect loop implemented; not hardware tested |
-| Sleep/wake, Windows restart, KDE/Gamescope restart | Service returns without manual restart | Not hardware tested |
+| Windows clipboard ↔ Game Mode XWayland `:0` | Passed on hardware |
+| Windows clipboard ↔ nested Desktop Mode Klipper | Passed on hardware |
+| Game Mode ↔ nested Desktop Mode | Passed on hardware |
+| Native Steam UI copy and paste | Confirmed by user |
+| Individual games and other displays | Not verified |
+| Frame service restart and SSH tunnel reconnection | Passed on hardware |
+| Protocol framing, authentication, 1 MiB limit, conflict ordering, shutdown | Covered by local tests |
+| Large real clipboard transfers, Wi-Fi loss, sleep/wake, reboot | Not verified on hardware |
 
 ## Development
 
-The project has no third-party Python dependencies. Run its local tests with:
+The Frame Desktop Mode backend requires `dbus-next`; the local tests can run
+without it. Run the tests with:
 
 ```sh
 python3 -m unittest discover -s tests -v

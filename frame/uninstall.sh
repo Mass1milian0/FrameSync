@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+systemctl --user disable --now framesync.service 2>/dev/null || true
+rm -f "$HOME/.config/systemd/user/framesync.service"
+systemctl --user daemon-reload
 rm -f "$HOME/.config/autostart/framesync.desktop"
 rm -f "$HOME/.local/bin/framesync-frame"
 rm -rf "$HOME/.local/share/framesync"
